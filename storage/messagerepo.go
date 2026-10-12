@@ -38,11 +38,14 @@ type ContextKey string
 const (
 	messageSelectRowCommonQuery            = "SELECT id, messageId, producerId, channelId, payload, contentType, priority, status, receivedAt, outboxedAt, headers, createdAt, updatedAt FROM message WHERE"
 	txContextKey                ContextKey = "tx"
-	pruneMessageQuery           string     = `SELECT
+	// NO_SEMIJOIN keeps MySQL from running the NOT EXISTS as an antijoin that materializes every
+	// non-delivered job from a full scan of `job`; with it, each candidate's jobs are checked
+	// through jobs_by_message. sqlite ignores the hint as a comment.
+	pruneMessageQuery string = `SELECT
 		m.id, m.messageId, m.producerId, m.channelId, m.payload, m.contentType, m.priority, m.status, m.receivedAt, m.outboxedAt, m.headers, m.createdAt, m.updatedAt
 		FROM message m
 		WHERE m.status = ? AND m.createdAt <= ? AND NOT EXISTS (
-			SELECT 1
+			SELECT /*+ NO_SEMIJOIN() */ 1
 			FROM job j
 			WHERE j.messageId = m.id AND j.status <> ?
 			LIMIT 1
