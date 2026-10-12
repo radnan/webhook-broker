@@ -492,6 +492,28 @@ func TestGetMessagesFromBeforeDurationThatAreCompletelyDeliveredResumesFromPage(
 	})
 }
 
+// Without the hint, MySQL 8 turns the NOT EXISTS into an antijoin that materializes every
+// non-delivered job from a full scan of `job`, once per page without a cursor - so each prune batch
+// pays a scan of the whole table. Neither sqlmock nor sqlite has MySQL's optimizer, so this pins the
+// hint; the plans were compared with EXPLAIN ANALYZE on MySQL 8.0.45 (see PR #271).
+func TestPruneScanChecksJobsPerMessageInsteadOfScanningAllJobs(t *testing.T) {
+	hinted := regexp.QuoteMeta("NOT EXISTS (\n\t\t\tSELECT /*+ NO_SEMIJOIN() */ 1")
+	for name, page := range map[string]*data.Pagination{
+		"FirstPage":  nil,
+		"CursorPage": {Next: &data.Cursor{ID: "d9s70oon62os73f0k3dg", Timestamp: time.Now()}},
+	} {
+		page := page
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			db, sqlMock, _ := sqlmock.New()
+			msgRepo := NewMessageRepository(db, NewChannelRepository(testDB), NewProducerRepository(testDB))
+			sqlMock.ExpectQuery(hinted).WillReturnError(errors.New("stop"))
+			msgRepo.GetMessagesFromBeforeDurationThatAreCompletelyDelivered(2*time.Second, 1000, page)
+			assert.Nil(t, sqlMock.ExpectationsWereMet())
+		})
+	}
+}
+
 func TestDeleteMessageJobs(t *testing.T) {
 	deliverJobRepo := getDeliverJobRepository()
 	msgRepo := getMessageRepository()
